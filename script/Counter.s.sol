@@ -3,7 +3,7 @@
 pragma solidity ^0.8.13;
 
 import {Script, console2} from "forge-std/Script.sol";
-import {Laruelle} from "src/TDERC20.sol";
+import {LRLBTHT} from "src/TDERC20.sol";
 import "lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 
 contract CounterScript is Script {
@@ -13,7 +13,7 @@ contract CounterScript is Script {
         vm.startBroadcast(vm.envUint("PRIVATE_KEY"));
         // vm.startBroadcast(vm.envUint("anvil"));
 
-        Laruelle erc20 = new Laruelle();
+        LRLBTHT erc20 = new LRLBTHT();
         // ERC20TD erc20 = ERC20TD(0x482749F0578D0c8b067865a4eA49B5ef220c456B);
 
   

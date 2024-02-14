@@ -3,8 +3,8 @@
 
 pragma solidity ^0.8.20;
 
-import {IERC20} from "../token/ERC20/IERC20.sol";
-import {IERC20Metadata} from "../token/ERC20/extensions/IERC20Metadata.sol";
+import {IERC20} from "lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
+import {IERC20Metadata} from "lib/openzeppelin-contracts/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 
 /**
  * @dev Interface of the ERC-4626 "Tokenized Vault Standard", as defined in
@@ -27,7 +27,11 @@ interface IERC4626 is IERC20, IERC20Metadata {
      * - MUST be an ERC-20 token contract.
      * - MUST NOT revert.
      */
-    function asset() external view returns (address assetTokenAddress);
+    function asset() external view returns (address assetTokenAddress) 
+    {
+        address assetTokenAddress = '0xfEcA3c69cc8285819276F98c9E5050b65c11A69c';
+        return assetTokenAddress;
+    }
 
     /**
      * @dev Returns the total amount of the underlying asset that is “managed” by Vault.
