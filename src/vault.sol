@@ -7,228 +7,185 @@ import {IERC20} from "lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.so
 import {IERC20Metadata} from "lib/openzeppelin-contracts/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 
 /**
- * @dev Interface of the ERC-4626 "Tokenized Vault Standard", as defined in
- * https://eips.ethereum.org/EIPS/eip-4626[ERC-4626].
- */
-interface IERC4626 is IERC20, IERC20Metadata {
-    event Deposit(address indexed sender, address indexed owner, uint256 assets, uint256 shares);
+ * @title Vault Contract
+*/
 
-    event Withdraw(
-        address indexed sender,
-        address indexed receiver,
-        address indexed owner,
-        uint256 assets,
-        uint256 shares
-    );
+contract MyVault is ERC4626 {
+
+    address private constant POOL_ADDRESS_PROVIDER = 0x012bAC54348C0E635dCAc9D5FB99f06F24136C9A;
+    address constant USDC_ADDRESS = 0x16dA4541aD1807f4443d92D26044C1147406EB80;
+
+    address private AAVE_LENDING_POOL_ADDRESS; 
+    address private PRICE_ORACLE;
+
+    mapping(address => uint256) public balances;
+    IPool private lendingPool;
+    IPriceOracle private priceOracle;
+
+
+    /*//////////////////////////////////////////////////////////////
+                               IMMUTABLE
+    //////////////////////////////////////////////////////////////*/
+
+
+    constructor(
+        ERC20 _token,
+        string memory _name,
+        string memory _symbol
+    ) ERC4626(_token, _name, _symbol) {
+        IPoolAddressesProvider provider = IPoolAddressesProvider(POOL_ADDRESS_PROVIDER);
+        AAVE_LENDING_POOL_ADDRESS = provider.getPool();
+        lendingPool = IPool(AAVE_LENDING_POOL_ADDRESS);
+        priceOracle = IPriceOracle(PRICE_ORACLE);
+    }
+
+
+
+    /*//////////////////////////////////////////////////////////////
+                        DEPOSIT/WITHDRAWAL LOGIC
+    //////////////////////////////////////////////////////////////*/
 
     /**
-     * @dev Returns the address of the underlying token used for the Vault for accounting, depositing, and withdrawing.
-     *
-     * - MUST be an ERC-20 token contract.
-     * - MUST NOT revert.
+     * @dev Deposit assets into the GhostVault and mint corresponding shares.
+     * @param assets The amount of assets to deposit.
+     * @param receiver The address to receive the minted shares.
+     * @return shares The number of shares minted.
      */
-    function asset() external view returns (address assetTokenAddress) 
-    {
-        address assetTokenAddress = '0xfEcA3c69cc8285819276F98c9E5050b65c11A69c';
-        return assetTokenAddress;
+    function deposit(uint256 assets, address receiver) public virtual override returns (uint256 shares) {
+        require((shares = previewDeposit(assets)) != 0, "ZERO_SHARES");
+        asset.transferFrom(msg.sender, address(this), assets);
+        _mint(receiver, shares);
+        emit Deposit(msg.sender, receiver, assets, shares);
+        afterDeposit(assets, shares);
     }
 
     /**
-     * @dev Returns the total amount of the underlying asset that is “managed” by Vault.
-     *
-     * - SHOULD include any compounding that occurs from yield.
-     * - MUST be inclusive of any fees that are charged against assets in the Vault.
-     * - MUST NOT revert.
+     * @dev Withdraw assets from the GhostVault and burn corresponding shares.
+     * @param assets The amount of assets to withdraw.
+     * @param receiver The address to receive the withdrawn assets.
+     * @param owner The owner of the shares being burned.
+     * @return shares The number of shares burned.
      */
-    function totalAssets() external view returns (uint256 totalManagedAssets);
+    function withdraw(
+        uint256 assets,
+        address receiver,
+        address owner
+    ) public virtual override returns (uint256 shares) {
+        shares = previewWithdraw(assets);
+        if (msg.sender != owner) {
+            uint256 allowed = allowance[owner][msg.sender];
+            if (allowed != type(uint256).max) allowance[owner][msg.sender] = allowed - shares;
+        }
+        beforeWithdraw(assets,
+        shares);
+
+        _burn(owner, shares);
+
+        emit Withdraw(msg.sender, receiver, owner, assets, shares);
+
+        asset.transferFrom(address(this), receiver, assets);
+    }
 
     /**
-     * @dev Returns the amount of shares that the Vault would exchange for the amount of assets provided, in an ideal
-     * scenario where all the conditions are met.
-     *
-     * - MUST NOT be inclusive of any fees that are charged against assets in the Vault.
-     * - MUST NOT show any variations depending on the caller.
-     * - MUST NOT reflect slippage or other on-chain conditions, when performing the actual exchange.
-     * - MUST NOT revert.
-     *
-     * NOTE: This calculation MAY NOT reflect the “per-user” price-per-share, and instead should reflect the
-     * “average-user’s” price-per-share, meaning what the average user should expect to see when exchanging to and
-     * from.
+     * @dev Perform actions after depositing assets into the GhostVault.
+     * @param assets The amount of assets deposited.
+     
      */
-    function convertToShares(uint256 assets) external view returns (uint256 shares);
+    function afterDeposit(uint256 assets, uint256 /*shares*/) internal virtual override {
+        // Approve lending pool to use tokens from this smart contract
+        asset.approve(AAVE_LENDING_POOL_ADDRESS, assets);
+
+        // Deposit tokens to the Aave lending pool
+        lendingPool.supply(address(asset), assets, address(this), 0);
+    }
 
     /**
-     * @dev Returns the amount of assets that the Vault would exchange for the amount of shares provided, in an ideal
-     * scenario where all the conditions are met.
-     *
-     * - MUST NOT be inclusive of any fees that are charged against assets in the Vault.
-     * - MUST NOT show any variations depending on the caller.
-     * - MUST NOT reflect slippage or other on-chain conditions, when performing the actual exchange.
-     * - MUST NOT revert.
-     *
-     * NOTE: This calculation MAY NOT reflect the “per-user” price-per-share, and instead should reflect the
-     * “average-user’s” price-per-share, meaning what the average user should expect to see when exchanging to and
-     * from.
+     * @dev Perform actions before withdrawing assets from the GhostVault.
+     * @param assets The amount of assets to withdraw.
      */
-    function convertToAssets(uint256 shares) external view returns (uint256 assets);
+    function beforeWithdraw(uint256 assets, uint256 /*shares*/) internal virtual override {
+        // Withdraw tokens directly from Aave to user
+        lendingPool.withdraw(address(asset), assets, msg.sender);
+    }
+
+
+
+    
+    /*//////////////////////////////////////////////////////////////
+                            ACCOUNTING LOGIC
+    //////////////////////////////////////////////////////////////*/
 
     /**
-     * @dev Returns the maximum amount of the underlying asset that can be deposited into the Vault for the receiver,
-     * through a deposit call.
-     *
-     * - MUST return a limited value if receiver is subject to some deposit limit.
-     * - MUST return 2 ** 256 - 1 if there is no limit on the maximum amount of assets that may be deposited.
-     * - MUST NOT revert.
+     * @dev Get the total assets held by the GhostVault.
+     * @return The total amount of assets held.
      */
-    function maxDeposit(address receiver) external view returns (uint256 maxAssets);
+    function totalAssets() public view virtual override returns (uint256) {
+        return asset.balanceOf(address(this));
+    }
 
     /**
-     * @dev Allows an on-chain or off-chain user to simulate the effects of their deposit at the current block, given
-     * current on-chain conditions.
-     *
-     * - MUST return as close to and no more than the exact amount of Vault shares that would be minted in a deposit
-     *   call in the same transaction. I.e. deposit should return the same or more shares as previewDeposit if called
-     *   in the same transaction.
-     * - MUST NOT account for deposit limits like those returned from maxDeposit and should always act as though the
-     *   deposit would be accepted, regardless if the user has enough tokens approved, etc.
-     * - MUST be inclusive of deposit fees. Integrators should be aware of the existence of deposit fees.
-     * - MUST NOT revert.
-     *
-     * NOTE: any unfavorable discrepancy between convertToShares and previewDeposit SHOULD be considered slippage in
-     * share price or some other type of condition, meaning the depositor will lose assets by depositing.
+     * @dev Convert the given amount of assets to shares.
+     * @param assets The amount of assets to convert.
+     * @return The number of shares corresponding to the given assets.
      */
-    function previewDeposit(uint256 assets) external view returns (uint256 shares);
+    function convertToShares(uint256 assets) public view virtual override returns (uint256) {
+        uint256 supply = assets;
+        return supply;
+    }
 
     /**
-     * @dev Mints shares Vault shares to receiver by depositing exactly amount of underlying tokens.
-     *
-     * - MUST emit the Deposit event.
-     * - MAY support an additional flow in which the underlying tokens are owned by the Vault contract before the
-     *   deposit execution, and are accounted for during deposit.
-     * - MUST revert if all of assets cannot be deposited (due to deposit limit being reached, slippage, the user not
-     *   approving enough underlying tokens to the Vault contract, etc).
-     *
-     * NOTE: most implementations will require pre-approval of the Vault with the Vault’s underlying asset token.
+     * @dev Convert the given number of shares to assets.
+     * @param shares The number of shares to convert.
+     * @return The amount of assets corresponding to the given shares.
      */
-    function deposit(uint256 assets, address receiver) external returns (uint256 shares);
+    function convertToAssets(uint256 shares) public view virtual override returns (uint256) {
+        uint256 supply = shares;
+        return supply;
+    }
 
     /**
-     * @dev Returns the maximum amount of the Vault shares that can be minted for the receiver, through a mint call.
-     * - MUST return a limited value if receiver is subject to some mint limit.
-     * - MUST return 2 ** 256 - 1 if there is no limit on the maximum amount of shares that may be minted.
-     * - MUST NOT revert.
+     * @dev Preview the number of shares that will be minted for the given amount of assets.
+     * @param assets The amount of assets to deposit.
+     * @return The number of shares that will be minted.
      */
-    function maxMint(address receiver) external view returns (uint256 maxShares);
+    function previewDeposit(uint256 assets) public view virtual override returns (uint256) {
+        return convertToShares(assets);
+    }
 
     /**
-     * @dev Allows an on-chain or off-chain user to simulate the effects of their mint at the current block, given
-     * current on-chain conditions.
-     *
-     * - MUST return as close to and no fewer than the exact amount of assets that would be deposited in a mint call
-     *   in the same transaction. I.e. mint should return the same or fewer assets as previewMint if called in the
-     *   same transaction.
-     * - MUST NOT account for mint limits like those returned from maxMint and should always act as though the mint
-     *   would be accepted, regardless if the user has enough tokens approved, etc.
-     * - MUST be inclusive of deposit fees. Integrators should be aware of the existence of deposit fees.
-     * - MUST NOT revert.
-     *
-     * NOTE: any unfavorable discrepancy between convertToAssets and previewMint SHOULD be considered slippage in
-     * share price or some other type of condition, meaning the depositor will lose assets by minting.
+     * @dev Preview the number of shares that will be burned for the given amount of assets to withdraw.
+     * @param assets The amount of assets to withdraw.
+     * @return The number of shares that will be burned.
      */
-    function previewMint(uint256 shares) external view returns (uint256 assets);
+    function previewWithdraw(uint256 assets) public view virtual override returns (uint256) {
+        uint256 supply = assets;
+        return supply;
+    }
 
     /**
-     * @dev Mints exactly shares Vault shares to receiver by depositing amount of underlying tokens.
-     *
-     * - MUST emit the Deposit event.
-     * - MAY support an additional flow in which the underlying tokens are owned by the Vault contract before the mint
-     *   execution, and are accounted for during mint.
-     * - MUST revert if all of shares cannot be minted (due to deposit limit being reached, slippage, the user not
-     *   approving enough underlying tokens to the Vault contract, etc).
-     *
-     * NOTE: most implementations will require pre-approval of the Vault with the Vault’s underlying asset token.
+     * @dev Preview the amount of assets that will be redeemed for the given number of shares.
+     * @param shares The number of shares to redeem.
+     * @return The amount of assets that will be redeemed.
      */
-    function mint(uint256 shares, address receiver) external returns (uint256 assets);
+    function previewRedeem(uint256 shares) public view virtual override returns (uint256) {
+        return convertToAssets(shares);
+    }
+
+
+    /*//////////////////////////////////////////////////////////////
+                            HELPER FUNCTIONS
+    //////////////////////////////////////////////////////////////*/
+
 
     /**
-     * @dev Returns the maximum amount of the underlying asset that can be withdrawn from the owner balance in the
-     * Vault, through a withdraw call.
-     *
-     * - MUST return a limited value if owner is subject to some withdrawal limit or timelock.
-     * - MUST NOT revert.
+     * @dev Get the price of the asset held by the GhostVault.
+     * @return The price of the asset.
      */
-    function maxWithdraw(address owner) external view returns (uint256 maxAssets);
+    function getAssetPrice( ) public view  returns (uint256) {
 
-    /**
-     * @dev Allows an on-chain or off-chain user to simulate the effects of their withdrawal at the current block,
-     * given current on-chain conditions.
-     *
-     * - MUST return as close to and no fewer than the exact amount of Vault shares that would be burned in a withdraw
-     *   call in the same transaction. I.e. withdraw should return the same or fewer shares as previewWithdraw if
-     *   called
-     *   in the same transaction.
-     * - MUST NOT account for withdrawal limits like those returned from maxWithdraw and should always act as though
-     *   the withdrawal would be accepted, regardless if the user has enough shares, etc.
-     * - MUST be inclusive of withdrawal fees. Integrators should be aware of the existence of withdrawal fees.
-     * - MUST NOT revert.
-     *
-     * NOTE: any unfavorable discrepancy between convertToShares and previewWithdraw SHOULD be considered slippage in
-     * share price or some other type of condition, meaning the depositor will lose assets by depositing.
-     */
-    function previewWithdraw(uint256 assets) external view returns (uint256 shares);
+        return priceOracle.getAssetPrice(USDC_ADDRESS);
 
-    /**
-     * @dev Burns shares from owner and sends exactly assets of underlying tokens to receiver.
-     *
-     * - MUST emit the Withdraw event.
-     * - MAY support an additional flow in which the underlying tokens are owned by the Vault contract before the
-     *   withdraw execution, and are accounted for during withdraw.
-     * - MUST revert if all of assets cannot be withdrawn (due to withdrawal limit being reached, slippage, the owner
-     *   not having enough shares, etc).
-     *
-     * Note that some implementations will require pre-requesting to the Vault before a withdrawal may be performed.
-     * Those methods should be performed separately.
-     */
-    function withdraw(uint256 assets, address receiver, address owner) external returns (uint256 shares);
+    }
 
-    /**
-     * @dev Returns the maximum amount of Vault shares that can be redeemed from the owner balance in the Vault,
-     * through a redeem call.
-     *
-     * - MUST return a limited value if owner is subject to some withdrawal limit or timelock.
-     * - MUST return balanceOf(owner) if owner is not subject to any withdrawal limit or timelock.
-     * - MUST NOT revert.
-     */
-    function maxRedeem(address owner) external view returns (uint256 maxShares);
-
-    /**
-     * @dev Allows an on-chain or off-chain user to simulate the effects of their redeemption at the current block,
-     * given current on-chain conditions.
-     *
-     * - MUST return as close to and no more than the exact amount of assets that would be withdrawn in a redeem call
-     *   in the same transaction. I.e. redeem should return the same or more assets as previewRedeem if called in the
-     *   same transaction.
-     * - MUST NOT account for redemption limits like those returned from maxRedeem and should always act as though the
-     *   redemption would be accepted, regardless if the user has enough shares, etc.
-     * - MUST be inclusive of withdrawal fees. Integrators should be aware of the existence of withdrawal fees.
-     * - MUST NOT revert.
-     *
-     * NOTE: any unfavorable discrepancy between convertToAssets and previewRedeem SHOULD be considered slippage in
-     * share price or some other type of condition, meaning the depositor will lose assets by redeeming.
-     */
-    function previewRedeem(uint256 shares) external view returns (uint256 assets);
-
-    /**
-     * @dev Burns exactly shares from owner and sends assets of underlying tokens to receiver.
-     *
-     * - MUST emit the Withdraw event.
-     * - MAY support an additional flow in which the underlying tokens are owned by the Vault contract before the
-     *   redeem execution, and are accounted for during redeem.
-     * - MUST revert if all of shares cannot be redeemed (due to withdrawal limit being reached, slippage, the owner
-     *   not having enough shares, etc).
-     *
-     * NOTE: some implementations will require pre-requesting to the Vault before a withdrawal may be performed.
-     * Those methods should be performed separately.
-     */
-    function redeem(uint256 shares, address receiver, address owner) external returns (uint256 assets);
+        
 }
